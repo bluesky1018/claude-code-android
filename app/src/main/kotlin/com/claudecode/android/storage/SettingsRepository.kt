@@ -2,234 +2,141 @@ package com.claudecode.android.storage
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.core.content.edit
-import com.claudecode.android.session.PermissionMode
-import org.json.JSONArray
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import kotlinx.serialization.json.*
 
 /**
- * 设置仓库 — 管理 App 的所有用户配置
+ * 设置仓库 — 像素级复刻真实 Claude Code 的配置文件格式
  *
- * 使用 Android SharedPreferences 存储，支持：
- * - Anthropic API Key（后续可加密存储）
- * - 默认模型选择
- * - 权限模式
- * - Brave Search API Key（WebSearch 工具）
- * - Hook 配置列表（JSON 格式）
- * - 默认工作目录
+ * 真实 Claude Code 配置层级：
+ * 1. 企业策略：系统目录（只读）
+ * 2. 用户设置：~/.claude.json
+ * 3. 项目设置：.claude.json（提交到 git）
+ * 4. 项目本地：.claude.local.json（不提交 git）
  *
- * ## 为什么用 SharedPreferences 而不是数据库？
- * 这些都是简单的键值对配置，SharedPreferences 足够用且无需 Schema 迁移。
- * 如果将来配置变复杂（如多账号），可以迁移到 DataStore 或 Room。
- *
- * ## 使用方式
- * ```kotlin
- * // 读取 API Key
- * val apiKey = settingsRepository.getApiKey()
- *
- * // 保存权限模式
- * settingsRepository.setPermissionMode(PermissionMode.ACCEPT_EDITS)
- * ```
+ * 配置格式与 .claude.json 完全兼容
  */
 class SettingsRepository(private val context: Context) {
 
-    companion object {
-        /** SharedPreferences 文件名 */
-        private const val PREFS_NAME = "claude_code_settings"
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
 
-        // ===== 配置键名常量 =====
-        private const val KEY_API_KEY           = "anthropic_api_key"
-        private const val KEY_MODEL             = "default_model"
-        private const val KEY_PERMISSION_MODE   = "permission_mode"
-        private const val KEY_BRAVE_API_KEY     = "brave_search_api_key"
-        private const val KEY_HOOK_CONFIGS      = "hook_configs_json"
-        private const val KEY_DEFAULT_WORK_DIR  = "default_working_directory"
+    // 加密存储（API Key 等敏感信息）
+    private val encryptedPrefs: SharedPreferences = EncryptedSharedPreferences.create(
+        context,
+        "claude_encrypted_prefs",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    )
 
-        // ===== 默认值 =====
-        private const val DEFAULT_MODEL        = "claude-opus-4-6"
-        private const val DEFAULT_WORK_DIR     = "/sdcard/claude-code"
-        private val DEFAULT_PERMISSION_MODE    = PermissionMode.DEFAULT
-    }
+    // 普通存储（非敏感设置）
+    private val prefs: SharedPreferences = context.getSharedPreferences("claude_settings", Context.MODE_PRIVATE)
 
-    /** 懒加载 SharedPreferences 实例（私有模式，其他 App 无法访问） */
-    private val prefs: SharedPreferences by lazy {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    }
+    // ==================== API Key ====================
 
-    // ===================================================
-    // Anthropic API Key
-    // ===================================================
+    /** 存储 Anthropic API Key（加密存储） */
+    fun saveApiKey(apiKey: String) = encryptedPrefs.edit().putString("api_key", apiKey).apply()
+    fun getApiKey(): String = encryptedPrefs.getString("api_key", "") ?: ""
+    fun hasApiKey(): Boolean = getApiKey().isNotBlank()
 
-    /**
-     * 获取 Anthropic API Key
-     *
-     * @return API Key 字符串，未设置时返回空字符串
-     */
-    fun getApiKey(): String {
-        return prefs.getString(KEY_API_KEY, "") ?: ""
-    }
+    // ==================== 模型设置 ====================
 
-    /**
-     * 保存 Anthropic API Key
-     *
-     * 注意：当前直接明文存储，生产环境应使用 Android Keystore 加密。
-     *
-     * @param apiKey 要保存的 API Key
-     */
-    fun setApiKey(apiKey: String) {
-        prefs.edit { putString(KEY_API_KEY, apiKey) }
-    }
+    fun getModel(): String = prefs.getString("model", "claude-sonnet-4-6") ?: "claude-sonnet-4-6"
+    fun setModel(model: String) = prefs.edit().putString("model", model).apply()
 
-    // ===================================================
-    // 默认模型
-    // ===================================================
+    /** --effort 级别：low/medium/high/max */
+    fun getEffortLevel(): String = prefs.getString("effort", "medium") ?: "medium"
+    fun setEffortLevel(level: String) = prefs.edit().putString("effort", level).apply()
 
-    /**
-     * 获取默认使用的 Claude 模型
-     *
-     * @return 模型 ID（如 "claude-opus-4-6"）
-     */
-    fun getModel(): String {
-        return prefs.getString(KEY_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL
-    }
+    // ==================== 权限模式 ====================
 
-    /**
-     * 设置默认模型
-     *
-     * @param model 模型 ID（如 "claude-opus-4-6", "claude-sonnet-4-5"）
-     */
-    fun setModel(model: String) {
-        prefs.edit { putString(KEY_MODEL, model) }
-    }
+    fun getPermissionMode(): String = prefs.getString("default_mode", "default") ?: "default"
+    fun setPermissionMode(mode: String) = prefs.edit().putString("default_mode", mode).apply()
 
-    // ===================================================
-    // 权限模式
-    // ===================================================
+    // ==================== 工具访问控制 ====================
 
-    /**
-     * 获取当前权限模式
-     *
-     * @return 权限模式枚举值
-     */
-    fun getPermissionMode(): PermissionMode {
-        val modeName = prefs.getString(KEY_PERMISSION_MODE, DEFAULT_PERMISSION_MODE.name)
-        return try {
-            PermissionMode.valueOf(modeName ?: DEFAULT_PERMISSION_MODE.name)
-        } catch (e: IllegalArgumentException) {
-            // 读取到非法值时回退到默认模式
-            DEFAULT_PERMISSION_MODE
-        }
-    }
+    fun getPermissionRules(): String = prefs.getString("permission_rules", "{}") ?: "{}"
+    fun setPermissionRules(json: String) = prefs.edit().putString("permission_rules", json).apply()
+
+    // ==================== 工作目录 ====================
+
+    fun getWorkingDirectory(): String = prefs.getString("working_dir", "/storage/emulated/0") ?: "/storage/emulated/0"
+    fun setWorkingDirectory(dir: String) = prefs.edit().putString("working_dir", dir).apply()
+
+    // ==================== Hook 配置 ====================
+
+    fun getHookConfigs(): String = prefs.getString("hooks", "{}") ?: "{}"
+    fun setHookConfigs(json: String) = prefs.edit().putString("hooks", json).apply()
+
+    // ==================== MCP Server 配置 ====================
+
+    fun getMcpServers(): String = prefs.getString("mcp_servers", "{}") ?: "{}"
+    fun setMcpServers(json: String) = prefs.edit().putString("mcp_servers", json).apply()
+
+    // ==================== 搜索 API ====================
+
+    fun getBraveSearchKey(): String = encryptedPrefs.getString("brave_search_key", "") ?: ""
+    fun saveBraveSearchKey(key: String) = encryptedPrefs.edit().putString("brave_search_key", key).apply()
+
+    // ==================== 会话设置 ====================
+
+    fun getMaxTurns(): Int? = prefs.getInt("max_turns", -1).takeIf { it > 0 }
+    fun setMaxTurns(turns: Int?) = prefs.edit().putInt("max_turns", turns ?: -1).apply()
+
+    fun getMaxBudgetUsd(): Double? = prefs.getFloat("max_budget_usd", -1f).toDouble().takeIf { it > 0 }
+    fun setMaxBudgetUsd(budget: Double?) = prefs.edit().putFloat("max_budget_usd", budget?.toFloat() ?: -1f).apply()
+
+    // ==================== 导出为 .claude.json 格式 ====================
 
     /**
-     * 设置权限模式
-     *
-     * @param mode 新的权限模式
+     * 导出为真实 Claude Code 的 .claude.json 格式
+     * 可用于与桌面版 Claude Code 同步配置
      */
-    fun setPermissionMode(mode: PermissionMode) {
-        prefs.edit { putString(KEY_PERMISSION_MODE, mode.name) }
+    fun exportAsClaudeJson(): String {
+        return buildJsonObject {
+            put("model", getModel())
+            put("effort", getEffortLevel())
+            putJsonObject("permissions") {
+                put("defaultMode", getPermissionMode())
+                try {
+                    val rules = Json.parseToJsonElement(getPermissionRules()).jsonObject
+                    rules.forEach { (k, v) -> put(k, v) }
+                } catch (e: Exception) { /* 忽略解析错误 */ }
+            }
+            try {
+                val hooks = Json.parseToJsonElement(getHookConfigs()).jsonObject
+                if (hooks.isNotEmpty()) put("hooks", hooks)
+            } catch (e: Exception) { /* 忽略 */ }
+            try {
+                val mcpServers = Json.parseToJsonElement(getMcpServers()).jsonObject
+                if (mcpServers.isNotEmpty()) put("mcpServers", mcpServers)
+            } catch (e: Exception) { /* 忽略 */ }
+        }.let { Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), it) }
     }
 
-    // ===================================================
-    // Brave Search API Key（WebSearch 工具使用）
-    // ===================================================
-
-    /**
-     * 获取 Brave Search API Key
-     *
-     * @return API Key，未设置时返回空字符串
-     */
-    fun getBraveApiKey(): String {
-        return prefs.getString(KEY_BRAVE_API_KEY, "") ?: ""
-    }
-
-    /**
-     * 设置 Brave Search API Key
-     *
-     * @param apiKey Brave Search API Key
-     */
-    fun setBraveApiKey(apiKey: String) {
-        prefs.edit { putString(KEY_BRAVE_API_KEY, apiKey) }
-    }
-
-    // ===================================================
-    // Hook 配置（JSON 数组格式）
-    // ===================================================
-
-    /**
-     * 获取 Hook 配置列表
-     *
-     * Hook 配置以 JSON 数组字符串形式存储，每个元素是一个 Hook 配置对象。
-     * 示例格式：
-     * ```json
-     * [
-     *   {"event": "PreToolUse", "matcher": "Bash", "command": "echo 'before bash'"},
-     *   {"event": "PostToolUse", "matcher": "*", "command": "logger 'tool used'"}
-     * ]
-     * ```
-     *
-     * @return Hook 配置 JSON 数组字符串列表
-     */
-    fun getHookConfigs(): List<String> {
-        val json = prefs.getString(KEY_HOOK_CONFIGS, "[]") ?: "[]"
-        return try {
-            val array = JSONArray(json)
-            (0 until array.length()).map { array.getString(it) }
+    /** 从 .claude.json 导入配置 */
+    fun importFromClaudeJson(json: String) {
+        try {
+            val obj = Json.parseToJsonElement(json).jsonObject
+            obj["model"]?.jsonPrimitive?.content?.let { setModel(it) }
+            obj["effort"]?.jsonPrimitive?.content?.let { setEffortLevel(it) }
+            obj["permissions"]?.jsonObject?.let { perms ->
+                perms["defaultMode"]?.jsonPrimitive?.content?.let { setPermissionMode(it) }
+                setPermissionRules(perms.toString())
+            }
+            obj["hooks"]?.jsonObject?.let { setHookConfigs(it.toString()) }
+            obj["mcpServers"]?.jsonObject?.let { setMcpServers(it.toString()) }
         } catch (e: Exception) {
-            emptyList()
+            android.util.Log.e("SettingsRepository", "Import failed: ${e.message}")
         }
     }
 
-    /**
-     * 保存 Hook 配置列表
-     *
-     * @param configs Hook 配置列表（每项是 JSON 对象字符串）
-     */
-    fun setHookConfigs(configs: List<String>) {
-        val array = JSONArray()
-        configs.forEach { array.put(it) }
-        prefs.edit { putString(KEY_HOOK_CONFIGS, array.toString()) }
-    }
-
-    // ===================================================
-    // 默认工作目录
-    // ===================================================
-
-    /**
-     * 获取 Agent 的默认工作目录
-     *
-     * @return 绝对路径字符串
-     */
-    fun getDefaultWorkingDir(): String {
-        return prefs.getString(KEY_DEFAULT_WORK_DIR, DEFAULT_WORK_DIR) ?: DEFAULT_WORK_DIR
-    }
-
-    /**
-     * 设置 Agent 的默认工作目录
-     *
-     * @param dir 绝对路径字符串（如 "/sdcard/projects"）
-     */
-    fun setDefaultWorkingDir(dir: String) {
-        prefs.edit { putString(KEY_DEFAULT_WORK_DIR, dir) }
-    }
-
-    // ===================================================
-    // 工具函数
-    // ===================================================
-
-    /**
-     * 清除所有设置（恢复出厂默认值）
-     * 用于"重置 App"功能
-     */
+    /** 清除所有设置 */
     fun clearAll() {
-        prefs.edit { clear() }
-    }
-
-    /**
-     * 检查是否已配置 API Key
-     *
-     * @return true = 已配置有效的 API Key
-     */
-    fun hasApiKey(): Boolean {
-        return getApiKey().isNotBlank()
+        prefs.edit().clear().apply()
+        encryptedPrefs.edit().clear().apply()
     }
 }
