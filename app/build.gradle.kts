@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp)  // Kotlin Symbol Processing，用于 Room 代码生成
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.0.0"  // JSON 序列化
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -12,90 +12,119 @@ android {
 
     defaultConfig {
         applicationId = "com.claudecode.android"
-        minSdk = 26        // Android 8.0+，支持大多数现代设备
+        minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        debug {
+            isDebuggable = true
+            applicationIdSuffix = ".debug"
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
+        freeCompilerArgs += listOf(
+            "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+        )
     }
 
     buildFeatures {
-        compose = true     // 启用 Jetpack Compose
+        compose = true
+        buildConfig = true
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 }
 
 dependencies {
-    // AndroidX 核心
+    // ==================== 核心 Android ====================
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
-    implementation(libs.androidx.navigation.compose)
 
-    // Compose UI
+    // ==================== Jetpack Compose UI ====================
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    debugImplementation(libs.androidx.ui.tooling)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
 
-    // Room DB — 用于持久化会话历史、记忆、定时任务
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)   // KSP 代码生成
-
-    // WorkManager — 用于后台定时任务
-    implementation(libs.androidx.work.runtime.ktx)
-
-    // Kotlin 协程
+    // ==================== Kotlin 协程 ====================
     implementation(libs.kotlinx.coroutines.android)
+
+    // ==================== 序列化 ====================
     implementation(libs.kotlinx.serialization.json)
 
-    // Ktor HTTP Client — 用于 Anthropic API 的 SSE 流式通信
+    // ==================== HTTP 客户端（Ktor — SSE 流式输出）====================
     implementation(libs.ktor.client.android)
     implementation(libs.ktor.client.content.negotiation)
-    implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.client.logging)
+    implementation(libs.ktor.serialization.kotlinx.json)
 
-    // jsoup — HTML 解析，用于 WebFetch 工具提取网页文本
+    // ==================== OkHttp（Hook HTTP 端点 + WebFetch）====================
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.logging)
+
+    // ==================== HTML 解析（WebFetch 工具）====================
     implementation(libs.jsoup)
 
-    // Sora Editor — 代码编辑器（支持语法高亮、自动补全）
+    // ==================== 代码编辑器（Sora Editor）====================
     implementation(libs.sora.editor)
-    implementation(libs.sora.editor.treesitter)
-    implementation(libs.sora.editor.textmate)
+    implementation(libs.sora.editor.language.treesitter)
 
-    // Markdown 渲染 — Compose 原生，无需 WebView
-    implementation(libs.markdown.renderer)
-    implementation(libs.markdown.renderer.m3)
-    implementation(libs.markdown.renderer.code)
+    // ==================== Markdown 渲染 ====================
+    implementation(libs.multiplatform.markdown.renderer.m3)
+    implementation(libs.multiplatform.markdown.renderer.code)
 
-    // 图片加载
-    implementation(libs.coil.compose)
+    // ==================== WorkManager（定时任务调度器）====================
+    implementation(libs.androidx.work.runtime.ktx)
 
-    // Koin 依赖注入
+    // ==================== Room DB（会话元数据持久化）====================
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // ==================== 加密存储（API Key 安全存储）====================
+    implementation(libs.androidx.security.crypto)
+
+    // ==================== 依赖注入（Koin）====================
     implementation(libs.koin.android)
     implementation(libs.koin.androidx.compose)
 
-    // 测试
+    // ==================== 图标扩展 ====================
+    implementation(libs.androidx.material.icons.extended)
+
+    // ==================== 测试 ====================
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.tooling)
+    debugImplementation(libs.androidx.ui.test.manifest)
 }
